@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fun Money Tracker</title>
+    <!-- Load Tailwind CSS for responsive, mobile-first styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+            color: #1f2937;
+        }
+        .scrollable-list {
+            max-height: 40vh;
+            overflow-y: auto;
+            scrollbar-width: none; /* Firefox */
+        }
+        .scrollable-list::-webkit-scrollbar {
+            display: none; /* Chrome, Safari, Opera */
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-6 md:p-8 min-h-screen">
+
+    <div id="app-container" class="max-w-xl mx-auto">
+        <h1 class="text-3xl font-extrabold text-center text-indigo-600 mb-2">Fun Money Tracker</h1>
+        <p id="auth-status" class="text-center text-sm text-gray-500 mb-6" id="auth-status">Status: Disconnected</p>
+
+        <!-- Current Balance Card -->
+        <div class="bg-white p-6 rounded-xl shadow-2xl mb-6 border-b-4 border-indigo-500">
+            <div class="text-sm font-medium text-gray-500">Current Fun Money Balance</div>
+            <div id="balance-display" class="text-5xl font-extrabold mt-1 text-gray-800 animate-pulse">
+                Loading...
+            </div>
+            <div id="user-id-display" class="text-xs mt-3 text-gray-400 truncate">User ID: N/A</div>
+        </div>
+
+        <!-- Transaction Form -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-6">
+            <h2 class="text-xl font-bold mb-4 text-gray-700">Log New Spending</h2>
+            <div class="flex flex-col space-y-4">
+                <input type="number" id="transaction-amount" placeholder="Amount Spent (e.g., 25.00)" class="p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                <input type="text" id="transaction-description" placeholder="What did you buy? (e.g., Movie tickets)" class="p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                <button id="add-spending-btn" class="w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-3 rounded-lg shadow-md transition duration-300 ease-in-out disabled:bg-gray-400">
+                    Log Spending
+                </button>
+            </div>
+        </div>
+
+        <!-- Monthly Deposit & Error Messages -->
+        <div class="flex flex-col sm:flex-row gap-4 mb-6">
+            <div class="w-full">
+                <input type="number" id="deposit-amount" placeholder="Monthly Deposit Amount (e.g., 100)" value="100" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
+            </div>
+            <button id="add-deposit-btn" class="w-full sm:w-1/2 bg-green-500 hover:bg-green-600 text-white font-semibold py-3 rounded-lg shadow-md transition duration-300 ease-in-out disabled:bg-gray-400">
+                Monthly Refill
+            </button>
+        </div>
+        
+        <div id="message-box" class="p-3 mb-4 rounded-lg hidden"></div>
+
+        <!-- Transaction History -->
+        <div class="bg-white p-6 rounded-xl shadow-lg">
+            <h2 class="text-xl font-bold mb-4 text-gray-700 flex justify-between items-center">
+                Transaction History 
+                <span id="transaction-count" class="text-sm font-normal text-gray-400"></span>
+            </h2>
+            <div id="transactions-list" class="scrollable-list border border-gray-200 rounded-lg">
+                <!-- Transactions will be loaded here -->
+                <div class="p-4 text-center text-gray-500" id="empty-state">No transactions yet. Add your first refill!</div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // =========================================================================
+        // ⚠️ STEP 1: PASTE YOUR FIREBASE CONFIG HERE 
+        // 
+        // This object has been successfully replaced with your live Firebase credentials.
+        // =========================================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyAuO-9DdvpPtI8dOE07WwUh-ev1Z1TxhOE",
+            authDomain: "fun-money-ef46d.firebaseapp.com",
+            projectId: "fun-money-ef46d",
+            storageBucket: "fun-money-ef46d.firebasestorage.app",
+            messagingSenderId: "825465315304",
+            appId: "1:825465315304:web:d6f4949c8555adaaa20e5d"
+        };
+        
+        // =========================================================================
+        // STEP 2: DEFINE YOUR APP ID AND COLLECTION PATH
+        //
+        // This namespace helps organize your data within the database.
+        // =========================================================================
+        const APP_ID_NAMESPACE = 'FunMoney'; // UPDATED
+
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        const balanceDisplay = document.getElementById('balance-display');
+        const listContainer = document.getElementById('transactions-list');
+        const emptyState = document.getElementById('empty-state');
+        const spendingBtn = document.getElementById('add-spending-btn');
+        const depositBtn = document.getElementById('add-deposit-btn');
+        const amountInput = document.getElementById('transaction-amount');
+        const descInput = document.getElementById('transaction-description');
+        const depositInput = document.getElementById('deposit-amount');
+        const messageBox = document.getElementById('message-box');
+        const authStatus = document.getElementById('auth-status');
+        const userIdDisplay = document.getElementById('user-id-display');
+        const transactionCountDisplay = document.getElementById('transaction-count');
+        
+        // Helper to show messages
+        function showMessage(text, isError = false) {
+            messageBox.textContent = text;
+            messageBox.className = 'p-3 mb-4 rounded-lg ' + (isError ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800');
+            messageBox.style.display = 'block';
+            setTimeout(() => {
+                messageBox.style.display = 'none';
+            }, 5000);
+        }
+
+        // --- Firebase Initialization and Authentication ---
+        async function initializeFirebase() {
+            try {
+                // Since valid keys are present, we proceed directly to initialization.
+                
+                setLogLevel('debug');
+                
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                authStatus.textContent = 'Connecting...';
+
+                // Listen for authentication state changes
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        isAuthReady = true;
+                        userIdDisplay.textContent = `User ID: ${userId}`;
+                        authStatus.textContent = 'Status: Connected & Ready';
+                        startRealtimeListener();
+                    } else {
+                        // Sign in anonymously to link data to this specific user/device
+                        await signInAnonymously(auth);
+                    }
+                });
+            } catch (error) {
+                showMessage(`Firebase Init Error: ${error.message}`, true);
+                balanceDisplay.textContent = 'Connection Failed';
+            }
+        }
+
+        // --- Firestore Realtime Listener ---
+        function startRealtimeListener() {
+            if (!isAuthReady || !userId) return;
+
+            // Defines the private collection path structure
+            const collectionPath = `artifacts/${APP_ID_NAMESPACE}/users/${userId}/fun_money_transactions`;
+            const q = query(collection(db, collectionPath), orderBy("timestamp", "desc"));
+            
+            // Set up real-time listener
+            onSnapshot(q, (snapshot) => {
+                let totalBalance = 0;
+                let transactionCount = 0;
+                listContainer.innerHTML = '';
+                
+                if (snapshot.empty) {
+                    emptyState.style.display = 'block';
+                    balanceDisplay.textContent = `$0.00`;
+                    transactionCountDisplay.textContent = '(0 items)';
+                    balanceDisplay.classList.remove('animate-pulse');
+                    return;
+                }
+                
+                emptyState.style.display = 'none';
+
+                snapshot.docs.forEach(doc => {
+                    const data = doc.data();
+                    const amount = data.amount || 0;
+                    const description = data.description || 'No Description';
+                    const date = data.timestamp ? data.timestamp.toDate().toLocaleDateString() : 'N/A';
+                    
+                    totalBalance += amount;
+                    transactionCount++;
+
+                    // Determine style based on transaction type
+                    const isSpending = amount < 0;
+                    const amountClass = isSpending ? 'text-red-600' : 'text-green-600';
+                    const sign = isSpending ? '-' : '+';
+                    const displayAmount = Math.abs(amount).toFixed(2);
+                    
+                    const item = document.createElement('div');
+                    item.className = 'flex justify-between items-center p-3 border-b border-gray-100 last:border-b-0 transition duration-150 hover:bg-gray-50';
+                    item.innerHTML = `
+                        <div>
+                            <div class="text-sm font-medium text-gray-800">${description}</div>
+                            <div class="text-xs text-gray-400">${date}</div>
+                        </div>
+                        <div class="text-lg font-semibold ${amountClass}">
+                            ${sign}$${displayAmount}
+                        </div>
+                    `;
+                    listContainer.appendChild(item);
+                });
+
+                // Update the total balance display
+                balanceDisplay.textContent = `$${totalBalance.toFixed(2)}`;
+                transactionCountDisplay.textContent = `(${transactionCount} items)`;
+                balanceDisplay.classList.remove('animate-pulse'); // Stop pulse once data is loaded
+
+            }, (error) => {
+                showMessage(`Realtime Data Error: ${error.message}`, true);
+                balanceDisplay.textContent = 'Error';
+            });
+        }
+
+        // --- Transaction Handlers ---
+        async function logTransaction(amount, description) {
+            if (!isAuthReady || !userId) {
+                showMessage('Please wait for the connection to initialize.', true);
+                return;
+            }
+            if (isNaN(amount) || amount === 0) {
+                showMessage('Please enter a valid amount.', true);
+                return;
+            }
+            if (!description.trim()) {
+                showMessage('Please enter a description for the transaction.', true);
+                return;
+            }
+
+            try {
+                const collectionPath = `artifacts/${APP_ID_NAMESPACE}/users/${userId}/fun_money_transactions`;
+                await addDoc(collection(db, collectionPath), {
+                    amount: parseFloat(amount),
+                    description: description.trim(),
+                    timestamp: serverTimestamp()
+                });
+                showMessage('Transaction logged successfully!');
+                
+            } catch (error) {
+                showMessage(`Failed to log transaction: ${error.message}`, true);
+            }
+        }
+        
+        // Event Listeners
+        spendingBtn.addEventListener('click', () => {
+            const amount = parseFloat(amountInput.value) || 0;
+            const description = descInput.value;
+            // Spending is a negative amount
+            logTransaction(-Math.abs(amount), description); 
+            // Clear inputs after logging
+            amountInput.value = ''; 
+            descInput.value = '';
+        });
+
+        depositBtn.addEventListener('click', () => {
+            const amount = parseFloat(depositInput.value) || 0;
+            if (amount <= 0) {
+                showMessage('Deposit amount must be positive.', true);
+                return;
+            }
+            const description = "Monthly Fun Money Deposit";
+            // Deposit is a positive amount
+            logTransaction(Math.abs(amount), description);
+        });
+
+        // Initialize everything
+        initializeFirebase();
+
+    </script>
+</body>
+</html>
